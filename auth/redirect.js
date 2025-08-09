@@ -1,5 +1,8 @@
 const { oauth2Client } = require("./client");
 const { google } = require("googleapis");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const User = require("../models/user");
 
 async function googleAuthCallbackHandler(req, res) {
   const { code } = req.query;
@@ -25,11 +28,50 @@ async function googleAuthCallbackHandler(req, res) {
       accessToken: tokens.access_token,
     };
 
-    console.log("User Info:", userInfo);
+    // Hash the refresh token before saving
+    const salt = await bcrypt.genSalt(10);
+    const hashedRefreshToken = await bcrypt.hash(userInfo.refreshToken, salt);
 
-    // res.redirect(
-    //   `http://localhost:3000/dashboard?accessToken=${tokens.access_token}`
-    // );
+    console.log("User Info:", userInfo);
+    // 1. Find the user by their email
+    let user = await User.findOne({ email: userInfo.email });
+    // 2. Check if the user exists
+    if (user) {
+      // User found, update the document
+      user.name = userInfo.name;
+      user.profileImage = userInfo.profileImage;
+      user.refreshToken = hashedRefreshToken;
+      user.provider = userInfo.provider;
+      await user.save(); // This will also update the 'updatedAt' timestamp
+    } else {
+      // User not found, create a new document
+      user = new User({
+        ...userInfo,
+        refreshToken: hashedRefreshToken,
+      });
+      await user.save();
+    }
+
+    // Prepare the payload for the JWT
+    const jwtPayload = {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      provider: user.provider,
+      profileImage: user.profileImage,
+      subscriptionTier: user.subscriptionTier,
+      accessToken: tokens.access_token, // Include the short-lived access token
+    };
+
+    // Generate a JWT with a 6-month validity
+    const jwtToken = jwt.sign(jwtPayload, process.env.JWT_SECRET, {
+      expiresIn: "180d", // 180 days, approximately 6 months
+    });
+
+    // Redirect with the JWT and accessToken
+    res.redirect(
+      `http://localhost:3000/dashboard?jwtToken=${jwtToken}&accessToken=${tokens.access_token}`
+    );
   } catch (error) {
     console.error("Error getting tokens or user info:", error);
     res.status(500).send("Authentication failed");
