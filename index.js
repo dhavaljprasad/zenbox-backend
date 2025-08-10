@@ -5,6 +5,7 @@ const cors = require("cors");
 const mongoose = require("mongoose");
 const googleAuthCallbackHandler = require("./auth/redirect");
 const { authUrl } = require("./auth/client");
+import authMiddleware from "./auth/middleware";
 
 // configuring packages
 dotenv.config();
@@ -14,16 +15,38 @@ app.use(cors());
 // defining the port from environment variables
 const port = process.env.PORT;
 
+// open routes
 app.get("/", (req, res) => {
   res.send("Hello World!");
 });
-
-// New route to handle the Google login initiation
 app.get("/auth/google", (req, res) => {
   res.redirect(authUrl);
 });
-
 app.get("/auth/google/callback", googleAuthCallbackHandler);
+
+// Create a new router for protected API endpoints
+const apiRouter = express.Router();
+// Apply the authentication middleware to all routes in apiRouter
+apiRouter.use(authMiddleware);
+
+// Define your protected API routes on the apiRouter
+apiRouter.get("/profile", (req, res) => {
+  // req.user contains the decoded JWT payload
+  res.json({ user: req.user, message: "This is a protected route." });
+});
+
+apiRouter.post("/mails/send", (req, res) => {
+  // Logic to send mail
+  res.json({ message: "Mail sent successfully." });
+});
+
+apiRouter.put("/settings", (req, res) => {
+  // Logic to update user settings
+  res.json({ message: "Settings updated." });
+});
+
+// Mount the apiRouter at the /api endpoint
+app.use("/api", apiRouter);
 
 // Create a function to connect to the database
 const connectDB = async () => {

@@ -32,7 +32,6 @@ async function googleAuthCallbackHandler(req, res) {
     const salt = await bcrypt.genSalt(10);
     const hashedRefreshToken = await bcrypt.hash(userInfo.refreshToken, salt);
 
-    console.log("User Info:", userInfo);
     // 1. Find the user by their email
     let user = await User.findOne({ email: userInfo.email });
     // 2. Check if the user exists
@@ -63,14 +62,28 @@ async function googleAuthCallbackHandler(req, res) {
       accessToken: tokens.access_token, // Include the short-lived access token
     };
 
-    // Generate a JWT with a 6-month validity
     const jwtToken = jwt.sign(jwtPayload, process.env.JWT_SECRET, {
-      expiresIn: "180d", // 180 days, approximately 6 months
+      expiresIn: "180d",
     });
+
+    res.cookie("jwtToken", jwtToken, {
+      // httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 180 * 24 * 60 * 60 * 1000,
+      sameSite: "strict",
+    });
+    res.cookie("accessToken", tokens.access_token, {
+      // httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 60 * 60 * 1000,
+      sameSite: "strict",
+    });
+
+    res.redirect(`http://localhost:3000/zenbox`);
 
     // Redirect with the JWT and accessToken
     res.redirect(
-      `http://localhost:3000/dashboard?jwtToken=${jwtToken}&accessToken=${tokens.access_token}`
+      `http://localhost:3000/mail?jwtToken=${jwtToken}&accessToken=${tokens.access_token}`
     );
   } catch (error) {
     console.error("Error getting tokens or user info:", error);
