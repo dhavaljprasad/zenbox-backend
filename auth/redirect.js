@@ -1,6 +1,6 @@
+// auth/redirect.js
 const { oauth2Client } = require("./client");
 const { google } = require("googleapis");
-const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/user");
 
@@ -10,10 +10,8 @@ async function googleAuthCallbackHandler(req, res) {
     const { tokens } = await oauth2Client.getToken(code);
     oauth2Client.setCredentials(tokens);
 
-    // Initialize the Google People API client
     const people = google.people({ version: "v1", auth: oauth2Client });
 
-    // Fetch the user's profile info
     const profile = await people.people.get({
       resourceName: "people/me",
       personFields: "emailAddresses,names,photos",
@@ -28,30 +26,26 @@ async function googleAuthCallbackHandler(req, res) {
       accessToken: tokens.access_token,
     };
 
-    // Hash the refresh token before saving
-    const salt = await bcrypt.genSalt(10);
-    const hashedRefreshToken = await bcrypt.hash(userInfo.refreshToken, salt);
-
     // 1. Find the user by their email
     let user = await User.findOne({ email: userInfo.email });
+
     // 2. Check if the user exists
     if (user) {
-      // User found, update the document
+      // User found, update the document with the raw refresh token
       user.name = userInfo.name;
       user.profileImage = userInfo.profileImage;
-      user.refreshToken = hashedRefreshToken;
+      user.refreshToken = userInfo.refreshToken; // <-- FIX: Save the raw token
       user.provider = userInfo.provider;
-      await user.save(); // This will also update the 'updatedAt' timestamp
+      await user.save();
     } else {
       // User not found, create a new document
       user = new User({
         ...userInfo,
-        refreshToken: hashedRefreshToken,
+        refreshToken: userInfo.refreshToken, // <-- FIX: Save the raw token
       });
       await user.save();
     }
 
-    // Prepare the payload for the JWT
     const jwtPayload = {
       id: user._id,
       name: user.name,
@@ -59,7 +53,7 @@ async function googleAuthCallbackHandler(req, res) {
       provider: user.provider,
       profileImage: user.profileImage,
       subscriptionTier: user.subscriptionTier,
-      accessToken: tokens.access_token, // Include the short-lived access token
+      accessToken: tokens.access_token,
     };
 
     const jwtToken = jwt.sign(jwtPayload, process.env.JWT_SECRET, {
@@ -67,24 +61,17 @@ async function googleAuthCallbackHandler(req, res) {
     });
 
     res.cookie("jwtToken", jwtToken, {
-      // httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       maxAge: 180 * 24 * 60 * 60 * 1000,
       sameSite: "strict",
     });
     res.cookie("accessToken", tokens.access_token, {
-      // httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       maxAge: 60 * 60 * 1000,
       sameSite: "strict",
     });
 
-    res.redirect(`http://localhost:3000/zenbox`);
-
-    // Redirect with the JWT and accessToken
-    res.redirect(
-      `http://localhost:3000/mail?jwtToken=${jwtToken}&accessToken=${tokens.access_token}`
-    );
+    res.redirect(`http://localhost:3000/mail`);
   } catch (error) {
     console.error("Error getting tokens or user info:", error);
     res.status(500).send("Authentication failed");
