@@ -285,59 +285,72 @@ mailRouter.post("/getMailData", async (req, res) => {
   }
 });
 
-mailRouter.get("/getAttachment", async (req, res) => {
+// Helper function to recursively find the correct part by attachmentId
+const findAttachmentPart = (parts, { attachmentId, mimeType, filename }) => {
+  if (!parts) return null;
+
+  for (const part of parts) {
+    // Primary check: Find by attachmentId (most reliable for attachments)
+    if (attachmentId && part.body && part.body.attachmentId === attachmentId) {
+      console.log(attachmentId, "attachmentId");
+      return part;
+    }
+    // Secondary check: Find by filename (useful for finding parts in the main message)
+    if (filename && part.filename === filename) {
+      return part;
+    }
+    // Tertiary check: Find by MIME type (useful for finding the text/html body)
+    if (mimeType && part.mimeType === mimeType) {
+      return part;
+    }
+
+    // Recursively check nested parts
+    if (part.parts) {
+      const found = findPart(part.parts, { attachmentId, mimeType, filename });
+      if (found) return found;
+    }
+  }
+
+  return null;
+};
+
+// ... (your existing backend code for the POST /getAttachment route) ...
+
+mailRouter.post("/getAttachment", async (req, res) => {
   try {
-    const { accessToken, messageId, attachmentId } = req.query;
+    const { accessToken, messageId, attachmentId, fileName } = req.body;
 
     if (!accessToken || !messageId || !attachmentId) {
       return res.status(400).json({ message: "Missing required parameters." });
     }
 
-    // Step 1: Get the message details to find the attachment's filename and mimeType
     const messageResponse = await axios.get(
       `${GOOGLE_GMAIL_ENDPOINT}/messages/${messageId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      }
+      { headers: { Authorization: `Bearer ${accessToken}` } }
     );
-
     const messageData = messageResponse.data;
-    const attachmentPart = findPartByAttachmentId(
-      messageData.payload.parts,
-      attachmentId
-    );
+    const attachmentPart = findAttachmentPart(messageData.payload.parts, {
+      attachmentId: attachmentId,
+      filename: fileName,
+    });
 
     if (!attachmentPart) {
-      return res
-        .status(404)
-        .json({ message: "Attachment not found in message." });
+      return res.status(404).json({ message: "Attachment not found." });
     }
 
     const mimeType = attachmentPart.mimeType;
-    const filename = attachmentPart.filename;
+    const filename = attachmentPart.filename || "attachment";
 
-    // Step 2: Get the actual attachment data using the attachmentId
     const attachmentResponse = await axios.get(
       `${GOOGLE_GMAIL_ENDPOINT}/messages/${messageId}/attachments/${attachmentId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      }
+      { headers: { Authorization: `Bearer ${accessToken}` } }
     );
-
     const base64Data = attachmentResponse.data.data;
-
-    // Decode the Base64 data
     const decodedData = Buffer.from(base64Data, "base64");
 
-    // Set the appropriate headers for the response
+    // CRITICAL: Set the headers to trigger a download
     res.setHeader("Content-Type", mimeType);
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-
-    // Send the decoded binary data
     res.send(decodedData);
   } catch (error) {
     if (error.response) {
@@ -351,20 +364,5 @@ mailRouter.get("/getAttachment", async (req, res) => {
     }
   }
 });
-
-// A new helper function to find the correct attachment part in the message payload
-const findPartByAttachmentId = (parts, attachmentId) => {
-  if (!parts) return null;
-  for (const part of parts) {
-    if (part.body && part.body.attachmentId === attachmentId) {
-      return part;
-    }
-    if (part.parts) {
-      const found = findPartByAttachmentId(part.parts, attachmentId);
-      if (found) return found;
-    }
-  }
-  return null;
-};
 
 module.exports = mailRouter;
