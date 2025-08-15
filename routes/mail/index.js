@@ -314,8 +314,6 @@ const findAttachmentPart = (parts, { attachmentId, mimeType, filename }) => {
   return null;
 };
 
-// ... (your existing backend code for the POST /getAttachment route) ...
-
 mailRouter.post("/getAttachment", async (req, res) => {
   try {
     const { accessToken, messageId, attachmentId, fileName } = req.body;

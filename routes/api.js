@@ -3,6 +3,7 @@ const express = require("express");
 const authMiddleware = require("../auth/middleware");
 const mailRouter = require("./mail/index");
 const gmailRouter = require("./gmail/index");
+const aiRouter = require("./ai/index");
 
 // Create a new router instance
 const apiRouter = express.Router();
@@ -17,6 +18,7 @@ apiRouter.use(authMiddleware);
 // Mount the mail and gmail routers
 apiRouter.use("/mail", mailRouter);
 apiRouter.use("/gmail", gmailRouter);
+apiRouter.use("/ai", aiRouter);
 
 // Export the router to be used in index.js
 module.exports = apiRouter;
