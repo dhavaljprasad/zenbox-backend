@@ -135,17 +135,27 @@ mailRouter.post("/allmail", async (req, res) => {
 
 // Helper to recursively find and process all message parts
 const processMessageParts = (parts) => {
-  let processed = [];
-  if (!parts) return processed;
+  if (!parts) {
+    return { type: "text", data: "No message content found." };
+  }
 
-  // First, check for an HTML part
+  // Find the HTML part first
   const htmlPart = findPart(parts, "text/html");
   if (htmlPart) {
     const data = htmlPart.body.data
       ? Buffer.from(htmlPart.body.data, "base64").toString("utf-8")
       : "";
-    processed.push({ type: htmlPart.mimeType, data: data });
-    return processed; // Return immediately with just the HTML part
+
+    // Regex to find and remove the div with class="gmail_quote" and everything after it
+    const replyRegex = /<div class=\"gmail_quote gmail_quote_container\">/is;
+    const match = data.match(replyRegex);
+
+    if (match) {
+      // Return only the content before the separator
+      return { type: "html", data: data.substring(0, match.index) };
+    }
+
+    return { type: "html", data: data };
   }
 
   // If no HTML is found, fall back to plain text
@@ -154,22 +164,21 @@ const processMessageParts = (parts) => {
     const data = plainTextPart.body.data
       ? Buffer.from(plainTextPart.body.data, "base64").toString("utf-8")
       : "";
-    processed.push({ type: plainTextPart.mimeType, data: data });
-    return processed; // Return with just the plain text part
+
+    // Regex for plain text replies (e.g., "On [Date]... wrote:")
+    const replyRegex = /^\s*On.*wrote:$/im;
+    const match = data.match(replyRegex);
+
+    if (match) {
+      // Return only the content before the separator
+      return { type: "text", data: data.substring(0, match.index) };
+    }
+
+    return { type: "text", data: data };
   }
 
-  // If neither is found, return other parts
-  // (This handles cases where the message is just an attachment, for example)
-  for (const part of parts) {
-    if (part.body.data) {
-      processed.push({ type: part.mimeType, data: part.body.data });
-    }
-    if (part.parts) {
-      processed = processed.concat(processMessageParts(part.parts));
-    }
-  }
-
-  return processed;
+  // If neither is found, return a default message
+  return { type: "text", data: "No renderable message content found." };
 };
 
 // You will also need this helper function to find a specific part recursively
@@ -208,6 +217,12 @@ mailRouter.post("/getMailData", async (req, res) => {
       return res.status(404).json({ message: "Thread not found or is empty." });
     }
 
+    // Extract the subject from the first message in the thread
+    const firstMessageHeaders = threadsData.messages[0].payload.headers;
+    const getHeader = (name, headers) =>
+      headers.find((h) => h.name === name)?.value || "";
+    const subject = getHeader("Subject", firstMessageHeaders);
+
     const processedMessages = threadsData.messages.map((message) => {
       const headers = message.payload.headers;
 
@@ -236,11 +251,12 @@ mailRouter.post("/getMailData", async (req, res) => {
       const isStarred = message.labelIds?.includes("STARRED") || false;
 
       return {
-        id: message.id,
+        id: message.id, // This is the message ID
         senderName,
         senderEmail,
         receiverName,
         isSent,
+        // The message body is now a single object
         message: processMessageParts(
           message.payload.parts || [message.payload]
         ),
@@ -251,7 +267,11 @@ mailRouter.post("/getMailData", async (req, res) => {
       };
     });
 
-    res.status(200).json(processedMessages);
+    res.status(200).json({
+      threadId: threadId, // Optional: You could add the thread ID here
+      subject: subject,
+      threads: processedMessages,
+    });
   } catch (error) {
     if (error.response) {
       res
@@ -264,5 +284,87 @@ mailRouter.post("/getMailData", async (req, res) => {
     }
   }
 });
+
+mailRouter.get("/getAttachment", async (req, res) => {
+  try {
+    const { accessToken, messageId, attachmentId } = req.query;
+
+    if (!accessToken || !messageId || !attachmentId) {
+      return res.status(400).json({ message: "Missing required parameters." });
+    }
+
+    // Step 1: Get the message details to find the attachment's filename and mimeType
+    const messageResponse = await axios.get(
+      `${GOOGLE_GMAIL_ENDPOINT}/messages/${messageId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    );
+
+    const messageData = messageResponse.data;
+    const attachmentPart = findPartByAttachmentId(
+      messageData.payload.parts,
+      attachmentId
+    );
+
+    if (!attachmentPart) {
+      return res
+        .status(404)
+        .json({ message: "Attachment not found in message." });
+    }
+
+    const mimeType = attachmentPart.mimeType;
+    const filename = attachmentPart.filename;
+
+    // Step 2: Get the actual attachment data using the attachmentId
+    const attachmentResponse = await axios.get(
+      `${GOOGLE_GMAIL_ENDPOINT}/messages/${messageId}/attachments/${attachmentId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    );
+
+    const base64Data = attachmentResponse.data.data;
+
+    // Decode the Base64 data
+    const decodedData = Buffer.from(base64Data, "base64");
+
+    // Set the appropriate headers for the response
+    res.setHeader("Content-Type", mimeType);
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+
+    // Send the decoded binary data
+    res.send(decodedData);
+  } catch (error) {
+    if (error.response) {
+      res
+        .status(error.response.status)
+        .json({ message: "API error", details: error.response.data });
+    } else if (error.request) {
+      res.status(503).json({ message: "Service unavailable." });
+    } else {
+      res.status(500).json({ message: "An unexpected error occurred." });
+    }
+  }
+});
+
+// A new helper function to find the correct attachment part in the message payload
+const findPartByAttachmentId = (parts, attachmentId) => {
+  if (!parts) return null;
+  for (const part of parts) {
+    if (part.body && part.body.attachmentId === attachmentId) {
+      return part;
+    }
+    if (part.parts) {
+      const found = findPartByAttachmentId(part.parts, attachmentId);
+      if (found) return found;
+    }
+  }
+  return null;
+};
 
 module.exports = mailRouter;
