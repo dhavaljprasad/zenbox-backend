@@ -198,9 +198,24 @@ const findPart = (parts, mimeType) => {
 
 mailRouter.post("/getMailData", async (req, res) => {
   try {
-    const { accessToken, threadId } = req.body;
+    const { messageId, accessToken, threadId } = req.body;
     const jwtToken = req.headers.authorization.split(" ")[1];
     const userEmail = jwt.decode(jwtToken).email;
+
+    const modifyResponse = await axios.post(
+      `${GOOGLE_GMAIL_ENDPOINT}/messages/${messageId}/modify`,
+      {
+        removeLabelIds: ["UNREAD"],
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    );
+
+    // ⭐️ You can log the response to confirm the update
+    console.log("Message read status updated:", modifyResponse.status);
 
     const threadsResponse = await axios.get(
       `${GOOGLE_GMAIL_ENDPOINT}/threads/${threadId}`,
