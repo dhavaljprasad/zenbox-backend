@@ -300,6 +300,32 @@ mailRouter.post("/getMailData", async (req, res) => {
   }
 });
 
+mailRouter.post("/nextMailSet", async (req, res) => {
+  try {
+    const { accessToken, type, nextPageToken } = req.body;
+    if (!accessToken) {
+      return res.status(401).json({ message: "Access token is missing." });
+    }
+
+    const fetchedData = await fetchAndProcessMessages(
+      accessToken,
+      nextPageToken,
+      `in:${type}`
+    );
+    res.status(200).json(fetchedData);
+  } catch (error) {
+    if (error.response) {
+      res
+        .status(error.response.status)
+        .json({ message: "API error", details: error.response.data });
+    } else if (error.request) {
+      res.status(503).json({ message: "Service unavailable." });
+    } else {
+      res.status(500).json({ message: "An unexpected error occurred." });
+    }
+  }
+});
+
 // Helper function to recursively find the correct part by attachmentId
 const findAttachmentPart = (parts, { attachmentId, mimeType, filename }) => {
   if (!parts) return null;
