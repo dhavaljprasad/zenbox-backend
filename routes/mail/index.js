@@ -105,20 +105,18 @@ mailRouter.post("/allmail", async (req, res) => {
       return res.status(401).json({ message: "Access token is missing." });
     }
 
-    const [inbox, sent, drafts, archive, spam] = await Promise.all([
+    const [inbox, sent, drafts, starred] = await Promise.all([
       fetchAndProcessMessages(accessToken, selectedPageId, "in:inbox"),
       fetchAndProcessMessages(accessToken, selectedPageId, "in:sent"),
       fetchAndProcessMessages(accessToken, selectedPageId, "in:drafts"),
-      fetchAndProcessMessages(accessToken, selectedPageId, "in:archive"),
-      fetchAndProcessMessages(accessToken, selectedPageId, "in:spam"),
+      fetchAndProcessMessages(accessToken, selectedPageId, "in:starred"),
     ]);
 
     res.status(200).json({
       inbox,
       sent,
       drafts,
-      archive,
-      spam,
+      starred,
     });
   } catch (error) {
     if (error.response) {
@@ -133,55 +131,6 @@ mailRouter.post("/allmail", async (req, res) => {
   }
 });
 
-// Helper to recursively find and process all message parts
-const processMessageParts = (parts) => {
-  if (!parts) {
-    return { type: "text", data: "No message content found." };
-  }
-
-  // Find the HTML part first
-  const htmlPart = findPart(parts, "text/html");
-  if (htmlPart) {
-    const data = htmlPart.body.data
-      ? Buffer.from(htmlPart.body.data, "base64").toString("utf-8")
-      : "";
-
-    // Regex to find and remove the div with class="gmail_quote" and everything after it
-    const replyRegex = /<div class=\"gmail_quote gmail_quote_container\">/is;
-    const match = data.match(replyRegex);
-
-    if (match) {
-      // Return only the content before the separator
-      return { type: "html", data: data.substring(0, match.index) };
-    }
-
-    return { type: "html", data: data };
-  }
-
-  // If no HTML is found, fall back to plain text
-  const plainTextPart = findPart(parts, "text/plain");
-  if (plainTextPart) {
-    const data = plainTextPart.body.data
-      ? Buffer.from(plainTextPart.body.data, "base64").toString("utf-8")
-      : "";
-
-    // Regex for plain text replies (e.g., "On [Date]... wrote:")
-    const replyRegex = /^\s*On.*wrote:$/im;
-    const match = data.match(replyRegex);
-
-    if (match) {
-      // Return only the content before the separator
-      return { type: "text", data: data.substring(0, match.index) };
-    }
-
-    return { type: "text", data: data };
-  }
-
-  // If neither is found, return a default message
-  return { type: "text", data: "No renderable message content found." };
-};
-
-// You will also need this helper function to find a specific part recursively
 const findPart = (parts, mimeType) => {
   if (!parts) return null;
   for (const part of parts) {
@@ -196,34 +145,86 @@ const findPart = (parts, mimeType) => {
   return null;
 };
 
+const processMessageParts = (parts) => {
+  if (!parts) {
+    return { type: "text", data: "No message content found." };
+  }
+
+  // Find the HTML part first
+  const htmlPart = findPart(parts, "text/html");
+  if (htmlPart) {
+    const data = htmlPart.body.data
+      ? Buffer.from(htmlPart.body.data, "base64").toString("utf-8")
+      : "";
+
+    // Regex to find the start of a quoted reply in Gmail
+    const replyRegex = /<div[^>]*class="[^"]*\bgmail_quote\b[^"]*"/i;
+    const match = data.match(replyRegex);
+
+    if (match) {
+      // Return only the content before the quoted reply
+      return { type: "html", data: data.substring(0, match.index) };
+    }
+
+    return { type: "html", data: data };
+  }
+
+  // If no HTML is found, fall back to plain text
+  const plainTextPart = findPart(parts, "text/plain");
+  if (plainTextPart) {
+    const data = plainTextPart.body.data
+      ? Buffer.from(plainTextPart.body.data, "base64").toString("utf-8")
+      : "";
+
+    // Regex for plain text replies (e.g., "On [Date]... wrote:")
+    const replyRegex = /^\s*On.*wrote:/im;
+    const match = data.match(replyRegex);
+
+    if (match) {
+      // Return only the content before the separator
+      return { type: "text", data: data.substring(0, match.index) };
+    }
+
+    return { type: "text", data: data };
+  }
+
+  // If neither is found, return a default message
+  return { type: "text", data: "No renderable message content found." };
+};
+
+// HELPER 3: Parse headers like To, Cc, Bcc into a structured array
+const parseEmailHeader = (headerString) => {
+  if (!headerString) return [];
+  // Split by comma, but not commas inside quotes
+  return headerString.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map((entry) => {
+    const nameMatch = entry.match(/^(.*?)<.*>$/);
+    const emailMatch = entry.match(/<(.*?)>/);
+
+    return {
+      name: nameMatch ? nameMatch[1].trim().replace(/"/g, "") : entry.trim(),
+      email: emailMatch ? emailMatch[1].trim() : entry.trim(),
+    };
+  });
+};
+
+// MAIN ENDPOINT
 mailRouter.post("/getMailData", async (req, res) => {
   try {
     const { messageId, accessToken, threadId } = req.body;
     const jwtToken = req.headers.authorization.split(" ")[1];
     const userEmail = jwt.decode(jwtToken).email;
 
-    const modifyResponse = await axios.post(
+    // Mark the specific message as read
+    await axios.post(
       `${GOOGLE_GMAIL_ENDPOINT}/messages/${messageId}/modify`,
-      {
-        removeLabelIds: ["UNREAD"],
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      }
+      { removeLabelIds: ["UNREAD"] },
+      { headers: { Authorization: `Bearer ${accessToken}` } }
     );
 
-    // ⭐️ You can log the response to confirm the update
-    console.log("Message read status updated:", modifyResponse.status);
-
+    // Fetch the entire thread
     const threadsResponse = await axios.get(
       `${GOOGLE_GMAIL_ENDPOINT}/threads/${threadId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      }
+      { headers: { Authorization: `Bearer ${accessToken}` } }
     );
 
     const threadsData = threadsResponse.data;
@@ -232,28 +233,27 @@ mailRouter.post("/getMailData", async (req, res) => {
       return res.status(404).json({ message: "Thread not found or is empty." });
     }
 
+    const getHeader = (name, headers) =>
+      headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ||
+      "";
+
     // Extract the subject from the first message in the thread
     const firstMessageHeaders = threadsData.messages[0].payload.headers;
-    const getHeader = (name, headers) =>
-      headers.find((h) => h.name === name)?.value || "";
     const subject = getHeader("Subject", firstMessageHeaders);
 
     const processedMessages = threadsData.messages.map((message) => {
       const headers = message.payload.headers;
 
-      const getHeader = (name) =>
-        headers.find((h) => h.name === name)?.value || "";
-
-      const fromHeader = getHeader("From");
-      const toHeader = getHeader("To");
+      const fromHeader = getHeader("From", headers);
+      const toHeader = getHeader("To", headers);
+      const ccHeader = getHeader("Cc", headers);
+      const bccHeader = getHeader("Bcc", headers); // Will only be present for sent mail
 
       const isSent = fromHeader.includes(userEmail);
-      const senderName = fromHeader.replace(/<.*?>/, "").trim() || fromHeader;
+      const senderInfo = parseEmailHeader(fromHeader)[0] || {};
 
-      // Extract sender's email using a regular expression
-      const senderEmail = /<(.*?)>/.exec(fromHeader)?.[1] || "";
-
-      const receiverName = toHeader.replace(/<.*?>/, "").trim() || toHeader;
+      // Check if the current user received this email because they were on the BCC list
+      const wasBcced = message.labelIds?.includes("BCC") || false;
 
       const attachments = (message.payload.parts || [])
         .filter((part) => part.filename && part.filename.length > 0)
@@ -266,15 +266,17 @@ mailRouter.post("/getMailData", async (req, res) => {
       const isStarred = message.labelIds?.includes("STARRED") || false;
 
       return {
-        id: message.id, // This is the message ID
-        senderName,
-        senderEmail,
-        receiverName,
+        id: message.id,
+        senderName: senderInfo.name,
+        senderEmail: senderInfo.email,
         isSent,
-        // The message body is now a single object
         message: processMessageParts(
           message.payload.parts || [message.payload]
         ),
+        to: parseEmailHeader(toHeader),
+        cc: parseEmailHeader(ccHeader),
+        bcc: parseEmailHeader(bccHeader), // Will be empty for received mail
+        wasBcced: wasBcced, // True if you received it via BCC
         attachments,
         time: message.internalDate,
         labels: message.labelIds,
@@ -283,7 +285,7 @@ mailRouter.post("/getMailData", async (req, res) => {
     });
 
     res.status(200).json({
-      threadId: threadId, // Optional: You could add the thread ID here
+      threadId: threadId,
       subject: subject,
       threads: processedMessages,
     });
@@ -295,10 +297,13 @@ mailRouter.post("/getMailData", async (req, res) => {
     } else if (error.request) {
       res.status(503).json({ message: "Service unavailable." });
     } else {
+      console.error("Unexpected error:", error); // Log the full error for debugging
       res.status(500).json({ message: "An unexpected error occurred." });
     }
   }
 });
+
+module.exports = mailRouter;
 
 mailRouter.post("/nextMailSet", async (req, res) => {
   try {
