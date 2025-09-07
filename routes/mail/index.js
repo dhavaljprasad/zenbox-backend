@@ -100,23 +100,19 @@ const fetchAndProcessMessages = async (accessToken, pageToken, query) => {
 
 mailRouter.post("/allmail", async (req, res) => {
   try {
-    const { accessToken, selectedPageId } = req.body;
+    const { accessToken, selectedPageId, selectedTab } = req.body;
     if (!accessToken) {
       return res.status(401).json({ message: "Access token is missing." });
     }
 
-    const [inbox, sent, drafts, starred] = await Promise.all([
-      fetchAndProcessMessages(accessToken, selectedPageId, "in:inbox"),
-      fetchAndProcessMessages(accessToken, selectedPageId, "in:sent"),
-      fetchAndProcessMessages(accessToken, selectedPageId, "in:drafts"),
-      fetchAndProcessMessages(accessToken, selectedPageId, "in:starred"),
-    ]);
+    const data = await fetchAndProcessMessages(
+      accessToken,
+      selectedPageId,
+      `in:${selectedTab}`
+    );
 
     res.status(200).json({
-      inbox,
-      sent,
-      drafts,
-      starred,
+      data,
     });
   } catch (error) {
     if (error.response) {

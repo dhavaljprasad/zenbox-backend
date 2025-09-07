@@ -1,8 +1,8 @@
 const express = require("express");
 const dotenv = require("dotenv");
 const { GoogleGenAI } = require("@google/genai");
-
 const { SummarizeThreadPrompt } = require("./prompts");
+const aiAgentChat = require("./chatagent/index");
 
 const aiRouter = express.Router();
 
@@ -32,5 +32,7 @@ aiRouter.post("/threadSummary", async (req, res) => {
       .json({ message: "An error occurred while generating the summary." });
   }
 });
+
+aiRouter.use("/chat", aiAgentChat);
 
 module.exports = aiRouter;
